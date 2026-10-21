@@ -1,0 +1,9 @@
+{
+  "name": "Payoff Planner",
+  "short_name": "Payoff",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f3f5f2",
+  "theme_color": "#1c5a4d",
+  "icons": []
+}
