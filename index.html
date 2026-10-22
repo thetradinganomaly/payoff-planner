@@ -534,9 +534,9 @@ function vBills(M){
   const bills=M.rows.filter(r=>!linkedIds.has(r.item.id));
   const dbtTot=M.debts.reduce((a,d)=>a+d.scheduled,0);
   return `<div class="view">${sampleBanner()}
-    <div class="row"><span class="muted small">Enter each debt and bill once. Payments repeat on their own cadence and stop when the debt is paid off.</span><span class="spacer"></span><label class="btn" for="xlsxFile">Import from Excel<input id="xlsxFile" type="file" accept=".xlsx,.xlsm" hidden></label><button class="btn" type="button" data-act="newDebt">+ Add debt</button><button class="btn primary" type="button" data-act="newItem">+ Add bill or payment</button></div>
+    <div class="row"><span class="muted small">Enter each bill or payment once. For a loan, card or payment plan, tick <b>This pays down a balance</b> and enter what you owe; the payoff date and interest appear on its card below.</span><span class="spacer"></span><label class="btn" for="xlsxFile">Import from Excel<input id="xlsxFile" type="file" accept=".xlsx,.xlsm" hidden></label><button class="btn primary" type="button" data-act="newItem">+ Add bill or payment</button></div>
     <div><div class="row" style="margin-bottom:8px"><span class="label">Debts</span><span class="spacer"></span><span class="small muted num">${M.debts.length?`owes ${fm0(M.balanceNow)} → ${fm0(M.balanceEnd)} by Dec · ${fm0(dbtTot)} / yr in payments`:''}</span></div>
-      ${M.debts.length?`<div class="grid cards">${M.debts.map(debtCard).join('')}</div>`:'<div class="card empty">No debts yet. Tap <b>Add debt</b> for each card, loan or balance you owe, then add its payment from the card.</div>'}</div>
+      ${M.debts.length?`<div class="grid cards">${M.debts.map(debtCard).join('')}</div>`:'<div class="card empty">No debts yet. Tap <b>Add bill or payment</b>, pick a debt type such as Credit Card or Auto Loan, and enter the total owed.</div>'}</div>
     <div><div class="row" style="margin-bottom:8px"><span class="label">Bills &amp; spending</span><span class="spacer"></span><span class="small muted num">${bills.length?`${fm0(bills.reduce((a,r)=>a+r.yearTotal,0))} / yr`:''}</span></div>
       ${bills.length?`<div class="grid cards">${bills.map(itemCard).join('')}</div>`:'<div class="card empty">No bills yet. Tap <b>Add bill or payment</b>, or <b>Import from Excel</b> to load the whole workbook at once.</div>'}</div>
   </div>`;
@@ -650,14 +650,26 @@ function parseWorkbook(XL,wb){
     const fraw=norm(g('frequency'));let freq=FQ[fraw];if(!freq){freq='monthly';if(fraw)warnings.push(`"${name}": unknown frequency "${str(g('frequency'))}", set to Monthly`)}
     const dueDate=toDate(g('due date'));if(!dueDate)warnings.push(`"${name}": no due date - set one after importing`);
     const amount=num(g('payment amount'));if(!amount)warnings.push(`"${name}": no payment amount`);
-    items.push({name,type:str(g('type')),category:str(g('category')),linked:str(g('linked debt account')),amount,dueDate:dueDate||'',freq,method:str(g('payment method')),status:/paus/.test(norm(g('status')))?'paused':'active',notes:str(g('notes'))})}
+    items.push({name,type:str(g('type')),category:str(g('category')),linked:str(g('linked debt account')),amount,dueDate:dueDate||'',freq,method:str(g('payment method')),status:/paus/.test(norm(g('status')))?'paused':'active',notes:str(g('notes')),balanceOwed:num(g('balance owed')),aprOwed:num(g('apr'))})}
   const lists={types:[],categories:[],methods:[]};let year=null;
   if(H){const col=(key,withNext)=>{for(let i=0;i<Math.min(H.length,80);i++){const row=H[i]||[];const j=row.findIndex(c=>norm(c)===key);if(j>=0){const out=[];for(let k=i+1;k<H.length;k++){const v=(H[k]||[])[j];if(v==null||str(v)==='')break;out.push(withNext?{name:str(v),debt:/^y/i.test(str(H[k][j+1]))}:str(v))}return out}}return []};
     lists.types=col('expense / debt type',true);lists.categories=col('category');lists.methods=col('payment method');
     for(let i=0;i<Math.min(H.length,12);i++){const row=H[i]||[];const j=row.findIndex(c=>norm(c)==='tracking year:');if(j>=0){const y=num(row[j+1]);if(y>=2000&&y<=2100)year=y}}}
-  const isSample=x=>/sample/i.test(x.notes);
-  const sampleCount=debts.filter(isSample).length+items.filter(isSample).length;
-  return {debts,items,lists,year,warnings,sampleCount};
+  // A row is a leftover sample only when its name AND figure still match the template's own sample row exactly.
+  const SAMPLE_DEBTS={'chase sapphire card':4250,'capital one quicksilver':1830.55,'auto loan - toyota':18450,'student loan - navient':21300,'mortgage - wells fargo':268000,'personal loan - sofi':6200,'medical - city hospital':850};
+  const SAMPLE_ITEMS={'chase sapphire card payment':275,'capital one payment':150,'car payment':412,'student loan payment':245,'mortgage':1875,'sofi loan (every payday)':105,'hospital payment plan':100,'electric - coned':145,'internet - verizon':79.99,'cell phone':85,'streaming bundle':24.99,'groceries':150,'auto insurance premium':648,'property tax':2400};
+  debts.forEach(d=>{d.sample=SAMPLE_DEBTS[norm(d.name)]!=null&&Math.abs(SAMPLE_DEBTS[norm(d.name)]-d.balance)<0.005;if(/^sample/i.test(d.notes))d.notes=''});
+  items.forEach(i=>{i.sample=SAMPLE_ITEMS[norm(i.name)]!=null&&Math.abs(SAMPLE_ITEMS[norm(i.name)]-i.amount)<0.005;if(/^sample/i.test(i.notes))i.notes=''});
+  // Link debt-type payments that have no linked account: same name in Debt Tracker, else a balance typed on the Expense Entry row, else warn.
+  const typeList=lists.types.length?lists.types:S.lists.types;const typeIsDebt=n=>!!(typeList.find(t=>norm(t.name)===norm(n))||{}).debt;
+  const known=n=>debts.find(d=>norm(d.name)===norm(n))||S.debts.find(d=>norm(d.name)===norm(n));
+  items.forEach(it=>{if(it.linked){if(!known(it.linked))warnings.push(`"${it.name}": linked account "${it.linked}" is not in Debt Tracker - it will come in as a plain bill`);return}
+    if(!typeIsDebt(it.type))return;
+    if(known(it.name)){it.linked=it.name;return}
+    if(it.balanceOwed>0){const apr=it.aprOwed>1?it.aprOwed/100:it.aprOwed;debts.push({name:it.name,type:it.type,lender:'',balance:it.balanceOwed,apr,limit:0,minPayment:it.amount,notes:'',sample:false,fromRow:true});it.linked=it.name;return}
+    warnings.push(`"${it.name}" is a ${it.type} but no balance was found for it - tap it after importing and enter what is owed`)});
+  const sampleNames=[...debts.filter(d=>d.sample).map(d=>d.name),...items.filter(i=>i.sample).map(i=>i.name)];
+  return {debts,items,lists,year,warnings,sampleCount:sampleNames.length,sampleNames};
 }
 function importPreview(P){
   pendingImport=P;
@@ -666,7 +678,7 @@ function importPreview(P){
       ${P.debts.length?`<div class="muted">Debts: ${esc(P.debts.slice(0,8).map(d=>d.name).join(', '))}${P.debts.length>8?', …':''}</div>`:''}
       ${P.items.length?`<div class="muted">Bills: ${esc(P.items.slice(0,8).map(d=>d.name).join(', '))}${P.items.length>8?', …':''}</div>`:''}</div>
     ${P.warnings.length?`<div class="banner" style="display:block"><b>Check these after importing:</b><ul class="small" style="margin:4px 0 0;padding-left:18px">${P.warnings.slice(0,10).map(w=>`<li>${esc(w)}</li>`).join('')}${P.warnings.length>10?`<li>…and ${P.warnings.length-10} more</li>`:''}</ul></div>`:''}
-    ${P.sampleCount?`<label class="row small"><input type="checkbox" id="impSkip" checked> Skip the ${P.sampleCount} row${P.sampleCount===1?'':'s'} still marked SAMPLE</label>`:''}
+    ${P.sampleCount?`<label class="row small"><input type="checkbox" id="impSkip" checked> Skip ${P.sampleCount} untouched sample row${P.sampleCount===1?'':'s'} (${esc(P.sampleNames.slice(0,5).join(', '))}${P.sampleNames.length>5?', …':''})</label>`:''}
     ${P.year&&P.year!==+S.year?`<label class="row small"><input type="checkbox" id="impYear" checked> Set the tracking year to ${P.year}</label>`:''}
     <label class="row small"><input type="checkbox" id="impLists" checked> Add the workbook's types, categories and payment methods to my lists</label>
     <div class="sheet-actions"><button class="btn primary" type="button" data-act="impMerge">Add to what I have</button><button class="btn danger" type="button" data-act="impReplace">Replace everything</button><button class="btn" type="button" data-act="closeSheet">Cancel</button></div>
@@ -675,14 +687,13 @@ function importPreview(P){
 function applyImport(mode){
   const P=pendingImport;if(!P)return;
   const skip=$('#impSkip')?.checked,setYear=$('#impYear')?.checked,addLists=$('#impLists')?.checked;
-  const isSample=x=>/sample/i.test(x.notes);
-  let debts=P.debts,items=P.items;if(skip){debts=debts.filter(x=>!isSample(x));items=items.filter(x=>!isSample(x))}
+  let debts=P.debts,items=P.items;if(skip){debts=debts.filter(x=>!x.sample);items=items.filter(x=>!x.sample)}
   if(mode==='replace'){S.debts=[];S.items=[];if(S.sim)S.sim.changes=[]}
   const key=v=>String(v??'').trim().toLowerCase();
   let nd=0,ni=0;
-  debts.forEach(d=>{const ex=S.debts.find(x=>key(x.name)===key(d.name));if(ex)Object.assign(ex,d);else S.debts.push({id:uid(),...d});nd++});
+  debts.forEach(d=>{const {sample,fromRow,...rec}=d;const ex=S.debts.find(x=>key(x.name)===key(d.name));if(ex)Object.assign(ex,rec);else S.debts.push({id:uid(),...rec});nd++});
   const missing=[];
-  items.forEach(it=>{const {linked,...rest}=it;const debt=linked?S.debts.find(x=>key(x.name)===key(linked)):null;if(linked&&!debt)missing.push(`${it.name} → ${linked}`);
+  items.forEach(it=>{const {linked,sample,balanceOwed,aprOwed,...rest}=it;const debt=linked?S.debts.find(x=>key(x.name)===key(linked)):null;if(linked&&!debt)missing.push(`${it.name} → ${linked}`);
     const rec={...rest,debtId:debt?debt.id:''};const ex=S.items.find(x=>key(x.name)===key(it.name));if(ex)Object.assign(ex,rec);else S.items.push({id:uid(),...rec});ni++});
   const addType=(name,debt)=>{if(name&&!S.lists.types.some(x=>key(x.name)===key(name)))S.lists.types.push({name,debt})};
   const addTo=(arr,v)=>{if(v&&!arr.some(x=>key(x)===key(v)))arr.push(v)};
@@ -761,27 +772,53 @@ function closeSheet(){const s=$('#scrim');if(s)s.remove();document.body.style.ov
 const opt=(arr,sel)=>arr.map(v=>`<option value="${esc(v)}" ${v===sel?'selected':''}>${esc(v)}</option>`).join('');
 
 function itemForm(item){
-  const isNew=!item.id;const it={name:'',type:S.lists.types[0]?.name||'',category:'',debtId:'',amount:'',dueDate:isoOf(dn(S.year,1,1)),freq:'monthly',method:S.lists.methods[0]||'',status:'active',notes:'',...item};
-  const debts=S.debts.filter(d=>d.name);
+  const isNew=!item.id;const it={name:'',type:S.lists.types[0]?.name||'',category:'',debtId:'',amount:'',dueDate:isoOf(dn(+S.year,1,1)),freq:'monthly',method:S.lists.methods[0]||'',status:'active',notes:'',...item};
+  const debts=S.debts.filter(d=>d.name);const typeIsDebt=n=>!!(S.lists.types.find(t=>t.name===n)||{}).debt;
+  const linked=it.debtId?debts.find(d=>d.id===it.debtId):null;const hasBal=!!linked||(isNew&&typeIsDebt(it.type));
+  const b=linked||{balance:'',apr:'',limit:'',minPayment:'',lender:''};
   openSheet(`<h2>${isNew?'Add bill or payment':'Edit'}</h2><form class="form" id="itemForm">
-    <div class="field"><label for="f_name">Name</label><input id="f_name" name="name" required value="${esc(it.name)}" placeholder="e.g. Car payment"></div>
+    <div class="field"><label for="f_name">Name</label><input id="f_name" name="name" required value="${esc(it.name)}" placeholder="e.g. Chase credit card"></div>
     <div class="two"><div class="field"><label for="f_type">Type</label><select id="f_type" name="type">${opt(S.lists.types.map(t=>t.name),it.type)}</select></div>
       <div class="field"><label for="f_cat">Category</label><select id="f_cat" name="category"><option value="">—</option>${opt(S.lists.categories,it.category)}</select></div></div>
-    <div class="field"><label for="f_debt">Linked debt account</label><select id="f_debt" name="debtId"><option value="">None, this is an ongoing bill</option>${debts.map(d=>`<option value="${d.id}" ${d.id===it.debtId?'selected':''}>${esc(d.name)} · owes ${fm0(d.balance)}</option>`).join('')}</select><span class="hint">Linked payments stop automatically when that balance reaches zero. ${debts.length?'':'Add the debt first with + Add debt.'}</span></div>
     <div class="two"><div class="field"><label for="f_amt">Payment amount</label><input id="f_amt" name="amount" type="number" inputmode="decimal" step="0.01" min="0" required value="${esc(it.amount)}" placeholder="0.00"></div>
       <div class="field"><label for="f_due">Due date</label><input id="f_due" name="dueDate" type="date" required value="${esc(it.dueDate)}"><span class="hint">Sets the day of the month, or the start of a weekly rhythm.</span></div></div>
     <div class="field"><label>Frequency</label><div class="seg">${Object.entries(FREQS).map(([k,f])=>`<label><input type="radio" name="freq" value="${k}" ${k===it.freq?'checked':''}><span>${f.label}</span></label>`).join('')}</div></div>
     <div class="two"><div class="field"><label for="f_method">Paid from</label><select id="f_method" name="method">${opt(S.lists.methods,it.method)}</select></div>
       <div class="field"><label>Status</label><div class="seg"><label><input type="radio" name="status" value="active" ${it.status!=='paused'?'checked':''}><span>Active</span></label><label><input type="radio" name="status" value="paused" ${it.status==='paused'?'checked':''}><span>Paused</span></label></div></div></div>
+    <div class="field" style="background:var(--surface-2);border-radius:12px;padding:10px 12px"><label class="row" style="font-size:14px;color:var(--ink);cursor:pointer"><input type="checkbox" id="f_hasbal" ${hasBal?'checked':''}> This pays down a balance I owe (loan, credit card, payment plan)</label>
+      <div id="balFields" class="form" style="margin-top:10px" ${hasBal?'':'hidden'}>
+        ${debts.length?`<div class="field"><label for="f_debt">Which balance</label><select id="f_debt" name="debtId"><option value="">Its own balance, entered below</option>${debts.map(d=>`<option value="${d.id}" ${d.id===it.debtId?'selected':''}>${esc(d.name)} · owes ${fm0(d.balance)}</option>`).join('')}</select><span class="hint">Pick an existing debt only when this is another payment toward it.</span></div>`:''}
+        <div class="two"><div class="field"><label for="f_bal">Total owed right now</label><input id="f_bal" name="balance" type="number" inputmode="decimal" step="0.01" min="0" value="${esc(b.balance)}" placeholder="e.g. 4250"></div>
+          <div class="field"><label for="f_apr">APR %</label><input id="f_apr" name="aprPct" type="number" inputmode="decimal" step="0.01" min="0" value="${b.apr===''||b.apr==null?'':((+b.apr||0)*100).toFixed(2)}" placeholder="e.g. 22.49"></div></div>
+        <div class="two"><div class="field"><label for="f_min">Minimum payment / month</label><input id="f_min" name="minPayment" type="number" inputmode="decimal" step="0.01" min="0" value="${esc(b.minPayment)}"></div>
+          <div class="field"><label for="f_lim">Credit limit</label><input id="f_lim" name="limit" type="number" inputmode="decimal" step="1" min="0" value="${esc(b.limit||'')}" placeholder="cards only"></div></div>
+        <div class="field"><label for="f_lender">Lender</label><input id="f_lender" name="lender" value="${esc(b.lender||'')}"></div>
+        <span class="hint">Payments stop on their own once this balance hits zero. The payoff date and interest show on the debt card.</span></div></div>
     <div class="field"><label for="f_notes">Notes</label><input id="f_notes" name="notes" value="${esc(it.notes)}"></div>
     <div class="calc" id="itemCalc"></div>
     <div class="sheet-actions"><button class="btn primary" type="submit">${isNew?'Add':'Save'}</button><button class="btn" type="button" data-act="closeSheet">Cancel</button><span class="spacer"></span>${isNew?'':`<button class="btn danger" type="button" data-act="delItem" data-id="${it.id}">Delete</button>`}</div>
     <input type="hidden" name="id" value="${esc(it.id||'')}"></form>`);
-  const form=$('#itemForm');const preview=()=>{const d=Object.fromEntries(new FormData(form).entries());const tmp={...it,...d,id:it.id||'preview',amount:+d.amount||0,name:d.name||'preview'};const debt=S.debts.find(x=>x.id===d.debtId);const others=S.items.filter(x=>x.id!==tmp.id);const {rows,ds}=runSchedule([...others,tmp],S.debts,+S.year);const row=rows.find(r=>r.item===tmp);const po=debt?payoffInfo(debt,ds[debt.id],+S.year):null;
-    $('#itemCalc').innerHTML=`<div>Scheduled this year: <b>${fm(row.yearTotal)}</b></div>${po?`<div>${esc(po.label)}${debt&&ds[debt.id].linked.length>1?' · counted together with the other payments linked to this debt':''}</div>`:''}<div class="muted">Months: ${row.pay.map((p,i)=>`${MON[i]} ${fm0(p)}`).join(' · ')}</div>`};
+  const form=$('#itemForm');const hb=$('#f_hasbal'),bf=$('#balFields'),fd=$('#f_debt');let touched=!isNew;
+  const fillFrom=d=>{$('#f_bal').value=d.balance??'';$('#f_apr').value=(d.apr==null||d.apr==='')?'':((+d.apr||0)*100).toFixed(2);$('#f_min').value=d.minPayment??'';$('#f_lim').value=d.limit||'';$('#f_lender').value=d.lender||''};
+  hb.addEventListener('change',()=>{touched=true;bf.hidden=!hb.checked;preview()});
+  $('#f_type').addEventListener('change',()=>{if(!touched){hb.checked=typeIsDebt($('#f_type').value);bf.hidden=!hb.checked}});
+  if(fd)fd.addEventListener('change',()=>{const d=debts.find(x=>x.id===fd.value);if(d)fillFrom(d);else fillFrom({balance:'',apr:'',minPayment:'',limit:'',lender:''})});
+  const preview=()=>{const d=Object.fromEntries(new FormData(form).entries());const tmp={...it,...d,id:it.id||'preview',amount:+d.amount||0,name:d.name||'preview'};
+    let debtsNow=S.debts,debt=null;
+    if(hb.checked){if(d.debtId)debt=S.debts.find(x=>x.id===d.debtId);if(!debt){debt={id:'preview-debt',name:'preview',balance:+d.balance||0,apr:(+d.aprPct||0)/100};debtsNow=[...S.debts,debt]}}
+    tmp.debtId=debt?debt.id:'';
+    const others=S.items.filter(x=>x.id!==tmp.id);const {rows,ds}=runSchedule([...others,tmp],debtsNow,+S.year);const row=rows.find(r=>r.item===tmp);const po=debt?payoffInfo(debt,ds[debt.id],+S.year):null;
+    $('#itemCalc').innerHTML=`<div>Scheduled this year: <b>${fm(row.yearTotal)}</b></div>${po?`<div>${esc(po.label)}${debt&&ds[debt.id].linked.length>1?' · counted together with the other payments on this balance':''}${hb.checked&&!(+d.balance>0)&&!d.debtId?' · <span style="color:var(--warn)">enter the total owed to see the payoff</span>':''}</div>`:''}<div class="muted">Months: ${row.pay.map((p,i)=>`${MON[i]} ${fm0(p)}`).join(' · ')}</div>`};
   form.addEventListener('input',preview);preview();
-  form.addEventListener('submit',e=>{e.preventDefault();const d=Object.fromEntries(new FormData(form).entries());d.amount=+d.amount||0;if(!d.name.trim())return;
-    if(d.id){Object.assign(S.items.find(x=>x.id===d.id),d)}else{d.id=uid();S.items.push(d)}
+  form.addEventListener('submit',e=>{e.preventDefault();const d=Object.fromEntries(new FormData(form).entries());if(!d.name.trim())return;
+    const rec={name:d.name.trim(),type:d.type,category:d.category,amount:+d.amount||0,dueDate:d.dueDate,freq:d.freq,method:d.method,status:d.status,notes:d.notes,debtId:''};
+    const prevDebtId=it.debtId||'';
+    if(hb.checked){let debt=d.debtId?S.debts.find(x=>x.id===d.debtId):(prevDebtId?S.debts.find(x=>x.id===prevDebtId):null);
+      const vals={balance:+d.balance||0,apr:(+d.aprPct||0)/100,minPayment:+d.minPayment||0,limit:+d.limit||0,lender:d.lender||''};
+      if(debt){Object.assign(debt,vals);if(!debt.type||!typeIsDebt(debt.type))debt.type=d.type}else{debt={id:uid(),name:rec.name,type:d.type,...vals,notes:''};S.debts.push(debt)}
+      rec.debtId=debt.id}
+    if(d.id){Object.assign(S.items.find(x=>x.id===d.id),rec)}else{rec.id=uid();S.items.push(rec)}
+    if(prevDebtId&&prevDebtId!==rec.debtId&&!S.items.some(x=>x.debtId===prevDebtId))S.debts=S.debts.filter(x=>x.id!==prevDebtId);
     S.sample=false;save();closeSheet();render();toast(d.id?'Saved':'Added')});
 }
 function incomeForm(inc){
