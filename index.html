@@ -598,7 +598,7 @@ function vSettings(M){
     <div class="card"><h2>Income</h2><p class="small muted" style="margin:0 0 10px">Paychecks and other money coming in. The calendar shows each one on its pay day and compares income with what is due.</p>
       ${(S.income||[]).length?`<div class="daylist">${S.income.map(x=>`<div class="dayrow"><i class="inc"></i><div><div>${esc(x.name)}</div><div class="sub">${(FREQS[x.freq]||FREQS.monthly).label}${x.dueDate?' from '+fmtDate(dn(...Object.values(parseISO(x.dueDate)))):''}</div></div><span class="row"><span class="amt inc">+${fm(x.amount)}</span><button class="btn small" type="button" data-act="editIncome" data-id="${x.id}">Edit</button></span></div>`).join('')}</div>`:'<div class="small muted">No income entered yet.</div>'}
       <div class="row" style="margin-top:10px"><button class="btn primary" type="button" data-act="newIncome">+ Add income</button><span class="small muted num">${M.income?`${fm0(M.income)} this year · ${fm0(M.income/12)} per month on average`:''}</span></div></div>
-    <div class="card"><h2>Import from the Excel template</h2><p class="small muted" style="margin:0 0 10px">Fill in the <b>Debt Tracker</b> and <b>Expense Entry</b> tabs of the Expense &amp; Debt Tracker workbook, then load the file here. Debts, bills, linked accounts, frequencies and your dropdown lists all come across in one go. You can add to what you have or replace it.</p>
+    <div class="card"><h2>Import from the Excel template</h2><p class="small muted" style="margin:0 0 10px">Fill in <b>Payoff_Planner_Import.xlsx</b> - its Bills &amp; Debts and Income tabs have exactly the app's fields - then load it here. Every row is listed in a preview before anything is saved. The older Expense &amp; Debt Tracker workbook still imports too.</p>
       <div class="row"><label class="btn primary" for="xlsxFile2">Choose the .xlsx file<input id="xlsxFile2" type="file" accept=".xlsx,.xlsm" hidden></label><span class="small muted">The spreadsheet reader downloads the first time you use this (about 1 MB), then stays cached.</span></div></div>
     <div class="card"><h2>Backup</h2><p class="small muted" style="margin:0 0 10px">Your data lives only on this device. Keep a backup: copy it somewhere safe (Notes, iCloud Drive, email to yourself) and paste it back here to restore.</p>
       <div class="row"><button class="btn primary" type="button" data-act="copyBackup">Copy backup</button>${window.STANDALONE?'<button class="btn" type="button" data-act="downloadBackup">Download file</button>':''}<label class="btn" for="importFile">Restore from file<input id="importFile" type="file" accept=".json,application/json" hidden></label><button class="btn" type="button" data-act="showPaste">Paste a backup</button></div>
@@ -628,7 +628,59 @@ async function importXlsx(file){
   if(!P){toast("That isn't the Expense & Debt Tracker workbook (it needs the Expense Entry and Debt Tracker tabs)");return}
   importPreview(P);
 }
-function parseWorkbook(XL,wb){
+function parseWorkbook(XL,wb){return parseImportSheet(XL,wb)||parseTemplate(XL,wb)}
+/* The purpose-built import sheet: "Bills & Debts" + "Income" tabs whose columns are the app's own fields. */
+function parseImportSheet(XL,wb){
+  const norm=v=>String(v??'').trim().toLowerCase().replace(/\*/g,'').replace(/\s+/g,' ').trim();
+  const find=re=>{const n=wb.SheetNames.find(x=>re.test(norm(x)));return n?XL.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:null}):null};
+  const B=find(/^bills/);if(!B)return null;
+  const hdrRow=(rows,need)=>{for(let i=0;i<Math.min(rows.length,10);i++){const h=(rows[i]||[]).map(norm);if(need.every(k=>h.some(x=>x.includes(k))))return {i,h}}return null};
+  const bh=hdrRow(B,['name','amount']);if(!bh)return null;
+  const colOf=(h,...keys)=>{for(const k of keys){const j=h.findIndex(x=>x===k);if(j>=0)return j}for(const k of keys){const j=h.findIndex(x=>x.includes(k));if(j>=0)return j}return -1};
+  const str=v=>String(v??'').trim();
+  const num=v=>{if(typeof v==='number')return v;if(typeof v==='string'){const n=parseFloat(v.replace(/[^0-9.\-]/g,''));return isNaN(n)?0:n}return 0};
+  const yes=v=>/^(y|yes|true|x|1)$/i.test(str(v));
+  const Y=+S.year||new Date().getFullYear();
+  const toDate=v=>{if(v instanceof Date&&!isNaN(v))return `${v.getFullYear()}-${String(v.getMonth()+1).padStart(2,'0')}-${String(v.getDate()).padStart(2,'0')}`;
+    if(typeof v==='number'&&v>20000&&v<80000)return isoOf(Math.round(v)-25569);
+    if(typeof v==='number'&&v>=1&&v<=31)return `${Y}-01-${String(v).padStart(2,'0')}`;
+    const t=str(v);if(!t)return null;let m;
+    if((m=t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/))){const y=m[3].length===2?2000+ +m[3]:+m[3];return `${y}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`}
+    if((m=t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)))return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+    if((m=t.match(/^(\d{1,2})[\/\-.](\d{1,2})$/)))return `${Y}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+    const d=new Date(t);if(!isNaN(d))return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;return null};
+  const freqOf=v=>{const t=norm(v);if(!t)return 'monthly';if(/bi.?week|every 2 week|every other week|fortnight|14 day/.test(t))return 'biweekly';if(/week|7 day/.test(t))return 'weekly';
+    if(/2 month|bi.?month|every other month/.test(t))return 'bimonthly';if(/quarter|3 month/.test(t))return 'quarterly';if(/semi|6 month|twice a year/.test(t))return 'semiannual';
+    if(/annual|year/.test(t))return 'annual';if(/once|one.?time|single/.test(t))return 'once';if(/month/.test(t))return 'monthly';return null};
+  const warnings=[],items=[],debts=[];
+  const c={name:colOf(bh.h,'name'),type:colOf(bh.h,'type'),cat:colOf(bh.h,'category'),amt:colOf(bh.h,'payment amount','amount'),due:colOf(bh.h,'due date','date'),freq:colOf(bh.h,'frequency','how often'),
+    method:colOf(bh.h,'paid from','payment method','method'),status:colOf(bh.h,'status'),hasBal:colOf(bh.h,'pays down'),bal:colOf(bh.h,'total owed','balance'),apr:colOf(bh.h,'apr'),min:colOf(bh.h,'minimum'),lim:colOf(bh.h,'credit limit','limit'),lender:colOf(bh.h,'lender'),notes:colOf(bh.h,'notes')};
+  const g=(row,k)=>c[k]>=0?row[c[k]]:null;
+  for(let i=bh.i+1;i<B.length;i++){const row=B[i]||[];const name=str(g(row,'name'));if(!name)continue;
+    const amount=num(g(row,'amt'));const dueDate=toDate(g(row,'due'));let freq=freqOf(g(row,'freq'));
+    if(!freq){warnings.push(`"${name}": frequency "${str(g(row,'freq'))}" not understood, set to Monthly`);freq='monthly'}
+    if(!dueDate)warnings.push(`"${name}": no due date - set one after importing`);
+    if(!amount)warnings.push(`"${name}": no payment amount`);
+    const balance=num(g(row,'bal'));let apr=num(g(row,'apr'));if(apr>1)apr=apr/100;
+    const flag=str(g(row,'hasBal'));const hasBal=flag?yes(flag):balance>0;
+    let type=str(g(row,'type'))||(hasBal?'Other Debt':'Bill / Utility');
+    const it={name,type,category:str(g(row,'cat')),linked:'',amount,dueDate:dueDate||'',freq,method:str(g(row,'method')),status:/paus/i.test(str(g(row,'status')))?'paused':'active',notes:str(g(row,'notes')),sample:false};
+    if(hasBal){if(!(balance>0))warnings.push(`"${name}": marked as paying down a balance but Total Owed Now is empty - enter it after importing`);
+      debts.push({name,type,lender:str(g(row,'lender')),balance,apr,limit:num(g(row,'lim')),minPayment:num(g(row,'min')),notes:'',sample:false,hasBalFlag:true});it.linked=name}
+    items.push(it)}
+  const income=[];const I=find(/^income/);
+  if(I){const ih=hdrRow(I,['name','amount']);if(ih){const ic={name:colOf(ih.h,'name'),amt:colOf(ih.h,'amount'),freq:colOf(ih.h,'how often','frequency'),due:colOf(ih.h,'pay date','date')};
+    for(let i=ih.i+1;i<I.length;i++){const row=I[i]||[];const name=str(ic.name>=0?row[ic.name]:'');if(!name)continue;const amount=num(ic.amt>=0?row[ic.amt]:0);const dueDate=toDate(ic.due>=0?row[ic.due]:null);let freq=freqOf(ic.freq>=0?row[ic.freq]:'');
+      if(!freq){warnings.push(`Income "${name}": frequency not understood, set to Monthly`);freq='monthly'}if(!dueDate)warnings.push(`Income "${name}": no pay date - set one after importing`);
+      income.push({name,amount,freq,dueDate:dueDate||'',status:'active'})}}}
+  const lists={types:[],categories:[],methods:[]};const L=find(/^lists/);
+  if(L){const col=(key,withNext)=>{for(let i=0;i<Math.min(L.length,5);i++){const row=L[i]||[];const j=row.findIndex(x=>norm(x)===key);if(j>=0){const out=[];for(let k=i+1;k<L.length;k++){const v=(L[k]||[])[j];if(v==null||str(v)==='')break;out.push(withNext?{name:str(v),debt:yes((L[k]||[])[j+1])}:str(v))}return out}}return []};
+    lists.types=col('type',true);lists.categories=col('category');lists.methods=col('paid from')}
+  // a type that was not in the app's list counts as debt when the row says it pays down a balance
+  debts.forEach(d=>{if(!lists.types.some(t=>norm(t.name)===norm(d.type)))lists.types.push({name:d.type,debt:true})});
+  return {debts,items,income,lists,year:null,warnings,sampleCount:0,sampleNames:[],format:'import'};
+}
+function parseTemplate(XL,wb){
   const norm=v=>String(v??'').trim().toLowerCase();
   const sheet=name=>{const n=wb.SheetNames.find(x=>norm(x)===norm(name));return n?XL.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:null}):null};
   const E=sheet('Expense Entry'),D=sheet('Debt Tracker'),H=sheet('Start Here');
@@ -674,9 +726,10 @@ function parseWorkbook(XL,wb){
 function importPreview(P){
   pendingImport=P;
   openSheet(`<h2>Import from the Excel template</h2><div class="form">
-    <div class="calc"><div>Found <b>${P.debts.length}</b> debt${P.debts.length===1?'':'s'} and <b>${P.items.length}</b> bill${P.items.length===1?'':'s'} / payment${P.items.length===1?'':'s'}${P.year?`, tracking year <b>${P.year}</b>`:''}.</div>
+    <div class="calc"><div>Found <b>${P.items.length}</b> bill${P.items.length===1?'':'s'} / payment${P.items.length===1?'':'s'}, of which <b>${P.debts.length}</b> carr${P.debts.length===1?'ies':'y'} a balance${P.income&&P.income.length?`, and <b>${P.income.length}</b> income source${P.income.length===1?'':'s'}`:''}${P.year?`, tracking year <b>${P.year}</b>`:''}. Every row is listed below - check the count against your sheet.</div>
       ${P.debts.length?`<div class="muted">Debts: ${esc(P.debts.slice(0,8).map(d=>d.name).join(', '))}${P.debts.length>8?', …':''}</div>`:''}
       ${P.items.length?`<div class="muted">Bills: ${esc(P.items.slice(0,8).map(d=>d.name).join(', '))}${P.items.length>8?', …':''}</div>`:''}</div>
+    <div class="table-wrap" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:10px"><table class="sum"><thead><tr><th style="text-align:left">Row</th><th style="text-align:left">Type</th><th>Pays</th><th style="text-align:left">How often</th><th style="text-align:left">Due</th><th>Owes</th></tr></thead><tbody>${P.items.map(i=>`<tr><td>${esc(i.name)}</td><td>${esc(i.type)}</td><td class="num">${fm0(i.amount)}</td><td>${(FREQS[i.freq]||FREQS.monthly).label}</td><td>${i.dueDate?esc(i.dueDate):'<span style="color:var(--warn)">missing</span>'}</td><td class="num">${(()=>{const d=i.linked&&P.debts.find(x=>x.name.toLowerCase()===i.linked.toLowerCase());return d?fm0(d.balance):'–'})()}</td></tr>`).join('')}${P.debts.filter(d=>!P.items.some(i=>i.linked&&i.linked.toLowerCase()===d.name.toLowerCase())).map(d=>`<tr><td>${esc(d.name)}</td><td>${esc(d.type)}</td><td class="num">–</td><td class="muted">no payment yet</td><td></td><td class="num">${fm0(d.balance)}</td></tr>`).join('')}${(P.income||[]).map(x=>`<tr><td>${esc(x.name)}</td><td><span class="pill good">Income</span></td><td class="num">+${fm0(x.amount)}</td><td>${(FREQS[x.freq]||FREQS.monthly).label}</td><td>${esc(x.dueDate||'')}</td><td></td></tr>`).join('')}</tbody></table></div>
     ${P.warnings.length?`<div class="banner" style="display:block"><b>Check these after importing:</b><ul class="small" style="margin:4px 0 0;padding-left:18px">${P.warnings.slice(0,10).map(w=>`<li>${esc(w)}</li>`).join('')}${P.warnings.length>10?`<li>…and ${P.warnings.length-10} more</li>`:''}</ul></div>`:''}
     ${P.sampleCount?`<label class="row small"><input type="checkbox" id="impSkip" checked> Skip ${P.sampleCount} untouched sample row${P.sampleCount===1?'':'s'} (${esc(P.sampleNames.slice(0,5).join(', '))}${P.sampleNames.length>5?', …':''})</label>`:''}
     ${P.year&&P.year!==+S.year?`<label class="row small"><input type="checkbox" id="impYear" checked> Set the tracking year to ${P.year}</label>`:''}
@@ -688,10 +741,11 @@ function applyImport(mode){
   const P=pendingImport;if(!P)return;
   const skip=$('#impSkip')?.checked,setYear=$('#impYear')?.checked,addLists=$('#impLists')?.checked;
   let debts=P.debts,items=P.items;if(skip){debts=debts.filter(x=>!x.sample);items=items.filter(x=>!x.sample)}
-  if(mode==='replace'){S.debts=[];S.items=[];if(S.sim)S.sim.changes=[]}
+  if(mode==='replace'){S.debts=[];S.items=[];if(P.income)S.income=[];if(S.sim)S.sim.changes=[]}
   const key=v=>String(v??'').trim().toLowerCase();
   let nd=0,ni=0;
-  debts.forEach(d=>{const {sample,fromRow,...rec}=d;const ex=S.debts.find(x=>key(x.name)===key(d.name));if(ex)Object.assign(ex,rec);else S.debts.push({id:uid(),...rec});nd++});
+  let nInc=0;(P.income||[]).forEach(x=>{S.income=S.income||[];const ex=S.income.find(y=>key(y.name)===key(x.name));if(ex)Object.assign(ex,x);else S.income.push({id:uid(),...x});nInc++});
+  debts.forEach(d=>{const {sample,fromRow,hasBalFlag,...rec}=d;const ex=S.debts.find(x=>key(x.name)===key(d.name));if(ex)Object.assign(ex,rec);else S.debts.push({id:uid(),...rec});nd++});
   const missing=[];
   items.forEach(it=>{const {linked,sample,balanceOwed,aprOwed,...rest}=it;const debt=linked?S.debts.find(x=>key(x.name)===key(linked)):null;if(linked&&!debt)missing.push(`${it.name} → ${linked}`);
     const rec={...rest,debtId:debt?debt.id:''};const ex=S.items.find(x=>key(x.name)===key(it.name));if(ex)Object.assign(ex,rec);else S.items.push({id:uid(),...rec});ni++});
@@ -702,7 +756,7 @@ function applyImport(mode){
   items.forEach(it=>{addType(it.type,false);addTo(S.lists.categories,it.category);addTo(S.lists.methods,it.method)});
   if(setYear&&P.year){S.year=P.year;cal={y:null,m:null,sel:null}}
   S.sample=false;pendingImport=null;save();closeSheet();nav('bills');
-  toast(`Imported ${nd} debt${nd===1?'':'s'} and ${ni} bill${ni===1?'':'s'}`+(missing.length?` - ${missing.length} linked account${missing.length===1?'':'s'} not found`:''));
+  toast(`Imported ${ni} bill${ni===1?'':'s'} (${nd} with a balance)`+(nInc?`, ${nInc} income`:'')+(missing.length?` - ${missing.length} linked account${missing.length===1?'':'s'} not found`:''));
 }
 
 /* ===================== SIMULATOR ===================== */
